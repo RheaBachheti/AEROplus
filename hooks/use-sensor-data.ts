@@ -1,22 +1,19 @@
 "use client"
 
 import { useEffect, useState, useCallback } from "react"
-import useSWR from "swr"
 import {
-  database,
+  getDb,
+  getSensorDataRef,
+  getDeviceStatusRef,
+  getAlertsRef,
+  getSensorHistoryRef,
   ref,
   onValue,
-  sensorDataRef,
-  deviceStatusRef,
-  alertsRef,
   type SensorData,
   type DeviceStatus,
   type Alert,
   calculateAQI,
 } from "@/lib/firebase"
-
-// Demo mode - simulates sensor data when Firebase is not connected
-const DEMO_MODE = !process.env.NEXT_PUBLIC_FIREBASE_DATABASE_URL
 
 function generateDemoData(): SensorData {
   // Simulate realistic sensor fluctuations
@@ -97,97 +94,150 @@ const outdoorAQIByState: Record<string, number> = {
 export function useSensorData() {
   const [currentData, setCurrentData] = useState<SensorData | null>(null)
   const [deviceStatus, setDeviceStatus] = useState<DeviceStatus>({
-    isOnline: DEMO_MODE,
+    isOnline: false,
     buzzerActive: false,
     lastSeen: Date.now(),
   })
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [history, setHistory] = useState<SensorData[]>([])
+  const [isDemo, setIsDemo] = useState(true)
+  const [connectionAttempted, setConnectionAttempted] = useState(false)
 
-  // Demo mode simulation
+  // Try to connect to Firebase, fall back to demo mode
   useEffect(() => {
-    if (DEMO_MODE) {
-      // Initialize with demo data
-      setCurrentData(generateDemoData())
-      setHistory(generateDemoHistory())
-      
-      // Update every 5 seconds
-      const interval = setInterval(() => {
-        const newData = generateDemoData()
-        setCurrentData(newData)
-        
-        // Add to history (keep last 24 hours)
-        setHistory(prev => {
-          const updated = [...prev, newData]
-          if (updated.length > 25) updated.shift()
-          return updated
-        })
-        
-        // Check for high gas alert
-        if (newData.gas > 300) {
-          setDeviceStatus(prev => ({ ...prev, buzzerActive: true }))
-          setAlerts(prev => [{
-            id: Date.now().toString(),
-            type: "high_gas",
-            message: "HIGH GAS: VENTILATE NOW",
-            timestamp: Date.now(),
-            acknowledged: false,
-          }, ...prev.slice(0, 4)])
-        } else {
-          setDeviceStatus(prev => ({ ...prev, buzzerActive: false }))
-        }
-      }, 5000)
-      
-      return () => clearInterval(interval)
+    if (typeof window === "undefined") return
+    
+    const db = getDb()
+    const sensorRef = getSensorDataRef()
+    
+    // If Firebase isn't available, use demo mode
+    if (!db || !sensorRef) {
+      setIsDemo(true)
+      setConnectionAttempted(true)
+      return
     }
-  }, [])
 
-  // Firebase real-time listeners (when not in demo mode)
-  useEffect(() => {
-    if (DEMO_MODE) return
+    // Try to connect to Firebase
+    let firebaseConnected = false
+    const timeout = setTimeout(() => {
+      if (!firebaseConnected) {
+        // Firebase didn't respond in time, switch to demo mode
+        setIsDemo(true)
+        setConnectionAttempted(true)
+      }
+    }, 5000)
 
     // Listen to current sensor data
-    const sensorUnsubscribe = onValue(sensorDataRef, (snapshot) => {
+    const unsubscribeSensor = onValue(sensorRef, (snapshot) => {
+      firebaseConnected = true
+      clearTimeout(timeout)
       const data = snapshot.val()
       if (data) {
         setCurrentData(data)
+        setIsDemo(false)
+        setDeviceStatus(prev => ({ ...prev, isOnline: true, lastSeen: Date.now() }))
       }
+      setConnectionAttempted(true)
+    }, (error) => {
+      console.error("[Aero+] Firebase sensor data error:", error)
+      setIsDemo(true)
+      setConnectionAttempted(true)
     })
 
     // Listen to device status
-    const statusUnsubscribe = onValue(deviceStatusRef, (snapshot) => {
-      const status = snapshot.val()
-      if (status) {
-        setDeviceStatus(status)
-      }
-    })
+    const deviceRef = getDeviceStatusRef()
+    let unsubscribeDevice = () => {}
+    if (deviceRef) {
+      unsubscribeDevice = onValue(deviceRef, (snapshot) => {
+        const status = snapshot.val()
+        if (status) {
+          setDeviceStatus(status)
+        }
+      }, (error) => {
+        console.error("[Aero+] Firebase device status error:", error)
+      })
+    }
 
     // Listen to alerts
-    const alertsUnsubscribe = onValue(alertsRef, (snapshot) => {
-      const data = snapshot.val()
-      if (data) {
-        const alertsList = Object.entries(data).map(([id, alert]: [string, unknown]) => ({
-          id,
-          ...(alert as Omit<Alert, 'id'>),
-        })).sort((a, b) => b.timestamp - a.timestamp)
-        setAlerts(alertsList)
-      }
-    })
+    const alertRef = getAlertsRef()
+    let unsubscribeAlerts = () => {}
+    if (alertRef) {
+      unsubscribeAlerts = onValue(alertRef, (snapshot) => {
+        const data = snapshot.val()
+        if (data) {
+          const alertsList = Object.entries(data).map(([id, alert]: [string, unknown]) => ({
+            id,
+            ...(alert as Omit<Alert, 'id'>),
+          })).sort((a, b) => b.timestamp - a.timestamp)
+          setAlerts(alertsList)
+        }
+      }, (error) => {
+        console.error("[Aero+] Firebase alerts error:", error)
+      })
+    }
 
     // Listen to history
-    const historyRef = ref(database, "sensorHistory")
-    const historyUnsubscribe = onValue(historyRef, (snapshot) => {
-      const data = snapshot.val()
-      if (data) {
-        const historyList = Object.values(data) as SensorData[]
-        setHistory(historyList.sort((a, b) => a.timestamp - b.timestamp))
-      }
-    })
+    const histRef = getSensorHistoryRef()
+    let unsubscribeHistory = () => {}
+    if (histRef) {
+      unsubscribeHistory = onValue(histRef, (snapshot) => {
+        const data = snapshot.val()
+        if (data) {
+          const historyList = Object.values(data) as SensorData[]
+          setHistory(historyList.sort((a, b) => a.timestamp - b.timestamp))
+        }
+      }, (error) => {
+        console.error("[Aero+] Firebase history error:", error)
+      })
+    }
 
     return () => {
-      // Clean up listeners
+      clearTimeout(timeout)
+      unsubscribeSensor()
+      unsubscribeDevice()
+      unsubscribeAlerts()
+      unsubscribeHistory()
     }
   }, [])
+
+  // Demo mode simulation - only runs when in demo mode
+  useEffect(() => {
+    if (!isDemo || !connectionAttempted) return
+
+    // Initialize with demo data
+    setCurrentData(generateDemoData())
+    setHistory(generateDemoHistory())
+    setDeviceStatus({ isOnline: true, buzzerActive: false, lastSeen: Date.now() })
+    
+    // Update every 5 seconds
+    const interval = setInterval(() => {
+      const newData = generateDemoData()
+      setCurrentData(newData)
+      
+      // Add to history (keep last 24 hours)
+      setHistory(prev => {
+        const updated = [...prev, newData]
+        if (updated.length > 25) updated.shift()
+        return updated
+      })
+      
+      // Check for high gas alert (occasionally trigger for demo)
+      if (newData.gas > 300) {
+        setDeviceStatus(prev => ({ ...prev, buzzerActive: true }))
+        setAlerts(prev => [{
+          id: Date.now().toString(),
+          type: "high_gas",
+          message: "HIGH GAS: VENTILATE NOW",
+          timestamp: Date.now(),
+          acknowledged: false,
+        }, ...prev.slice(0, 4)])
+      } else {
+        setDeviceStatus(prev => ({ ...prev, buzzerActive: false }))
+      }
+    }, 5000)
+    
+    return () => clearInterval(interval)
+  }, [isDemo, connectionAttempted])
 
   // Calculate indoor AQI from sensor data
   const indoorAQI = currentData 
@@ -208,6 +258,6 @@ export function useSensorData() {
     history,
     indoorAQI,
     getOutdoorAQI,
-    isDemo: DEMO_MODE,
+    isDemo,
   }
 }

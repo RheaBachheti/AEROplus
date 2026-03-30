@@ -1,25 +1,61 @@
-import { initializeApp, getApps } from "firebase/app"
-import { getDatabase, ref, onValue, set, push, query, orderByChild, limitToLast } from "firebase/database"
+import { initializeApp, getApps, type FirebaseApp } from "firebase/app"
+import { getDatabase, ref, onValue, set, push, query, orderByChild, limitToLast, type Database } from "firebase/database"
 
+// Your Firebase configuration - hardcoded for Aero+ project
 const firebaseConfig = {
-  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
-  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
-  databaseURL: process.env.NEXT_PUBLIC_FIREBASE_DATABASE_URL,
-  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
-  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
-  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
+  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY || "",
+  authDomain: "aeroplus-b7205.firebaseapp.com",
+  databaseURL: "https://aeroplus-b7205-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "aeroplus-b7205",
+  storageBucket: "aeroplus-b7205.appspot.com",
+  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || "",
+  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID || "",
 }
 
-// Initialize Firebase only if not already initialized
-const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0]
-const database = getDatabase(app)
+// Lazy initialization to prevent server-side errors
+let app: FirebaseApp | null = null
+let database: Database | null = null
 
-// Firebase Realtime Database references
-export const sensorDataRef = ref(database, "sensorData")
-export const sensorHistoryRef = ref(database, "sensorHistory")
-export const alertsRef = ref(database, "alerts")
-export const deviceStatusRef = ref(database, "deviceStatus")
+function initializeFirebase() {
+  if (typeof window === "undefined") return null
+  
+  if (!app) {
+    try {
+      app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0]
+      database = getDatabase(app)
+    } catch (error) {
+      console.error("[Aero+] Firebase initialization failed:", error)
+      return null
+    }
+  }
+  return database
+}
+
+// Get database instance (lazy loaded)
+export function getDb(): Database | null {
+  return initializeFirebase()
+}
+
+// Create refs lazily
+export function getSensorDataRef() {
+  const db = getDb()
+  return db ? ref(db, "sensorData") : null
+}
+
+export function getSensorHistoryRef() {
+  const db = getDb()
+  return db ? ref(db, "sensorHistory") : null
+}
+
+export function getAlertsRef() {
+  const db = getDb()
+  return db ? ref(db, "alerts") : null
+}
+
+export function getDeviceStatusRef() {
+  const db = getDb()
+  return db ? ref(db, "deviceStatus") : null
+}
 
 // Types for sensor data from ESP32
 export interface SensorData {
@@ -75,4 +111,4 @@ export function getAQICategory(aqi: number): { label: string; color: string; des
   return { label: "Hazardous", color: "#7f1d1d", description: "Emergency conditions" }
 }
 
-export { database, ref, onValue, set, push, query, orderByChild, limitToLast }
+export { ref, onValue, set, push, query, orderByChild, limitToLast }
