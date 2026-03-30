@@ -11,14 +11,14 @@ interface TrendChartProps {
 export function TrendChart({ data, showAQI = true }: TrendChartProps) {
   // Transform data for the chart
   const chartData = data.map((item) => {
-    const date = new Date(item.timestamp)
+    const date = new Date(item.timestamp || Date.now())
     return {
       time: date.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }),
       hour: date.getHours(),
-      gas: item.gas,
+      gasPPM: item.gasPPM,
       temperature: item.temperature,
       humidity: item.humidity,
-      aqi: calculateAQI(item.gas, item.temperature, item.humidity),
+      aqi: calculateAQI(item.gasPPM, item.temperature, item.humidity),
     }
   })
 
@@ -72,7 +72,7 @@ export function TrendChart({ data, showAQI = true }: TrendChartProps) {
           
           <Line
             type="monotone"
-            dataKey="gas"
+            dataKey="gasPPM"
             name="Gas (PPM)"
             stroke="hsl(var(--chart-4))"
             strokeWidth={2}

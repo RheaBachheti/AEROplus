@@ -1,13 +1,16 @@
 "use client"
 
+// Hook for real-time sensor data from Firebase
 import { useEffect, useState, useCallback } from "react"
 import {
   getDb,
+  getGasPPMRef,
+  getTemperatureRef,
+  getHumidityRef,
   getSensorDataRef,
   getDeviceStatusRef,
   getAlertsRef,
   getSensorHistoryRef,
-  ref,
   onValue,
   type SensorData,
   type DeviceStatus,
@@ -17,12 +20,12 @@ import {
 
 function generateDemoData(): SensorData {
   // Simulate realistic sensor fluctuations
-  const baseGas = 150 + Math.random() * 100
+  const baseGas = 250 + Math.random() * 150
   const baseTemp = 24 + Math.random() * 4
   const baseHumidity = 50 + Math.random() * 15
   
   return {
-    gas: Math.round(baseGas),
+    gasPPM: Math.round(baseGas),
     temperature: Math.round(baseTemp * 10) / 10,
     humidity: Math.round(baseHumidity),
     timestamp: Date.now(),
@@ -40,7 +43,7 @@ function generateDemoHistory(): SensorData[] {
     const isCookingTime = (hour >= 7 && hour <= 9) || (hour >= 18 && hour <= 21)
     
     history.push({
-      gas: Math.round(100 + (isCookingTime ? 200 : 50) + Math.random() * 80),
+      gasPPM: Math.round(200 + (isCookingTime ? 400 : 100) + Math.random() * 150),
       temperature: Math.round((22 + Math.sin(hour / 24 * Math.PI) * 4 + Math.random() * 2) * 10) / 10,
       humidity: Math.round(45 + Math.cos(hour / 24 * Math.PI) * 10 + Math.random() * 5),
       timestamp: now - hourOffset,
@@ -103,107 +106,198 @@ export function useSensorData() {
   const [isDemo, setIsDemo] = useState(true)
   const [connectionAttempted, setConnectionAttempted] = useState(false)
 
-  // Try to connect to Firebase, fall back to demo mode
+  // Try to connect to Firebase
   useEffect(() => {
     if (typeof window === "undefined") return
     
-    const db = getDb()
-    const sensorRef = getSensorDataRef()
-    
-    // If Firebase isn't available, use demo mode
-    if (!db || !sensorRef) {
-      setIsDemo(true)
-      setConnectionAttempted(true)
-      return
-    }
-
-    // Try to connect to Firebase
-    let firebaseConnected = false
-    const timeout = setTimeout(() => {
-      if (!firebaseConnected) {
-        // Firebase didn't respond in time, switch to demo mode
+    // Small delay to ensure client-side hydration is complete
+    const initTimeout = setTimeout(() => {
+      const db = getDb()
+      
+      // If Firebase isn't available, use demo mode
+      if (!db) {
+        console.log("[Aero+] Firebase not available, using demo mode")
         setIsDemo(true)
         setConnectionAttempted(true)
+        return
       }
-    }, 5000)
 
-    // Listen to current sensor data
-    const unsubscribeSensor = onValue(sensorRef, (snapshot) => {
-      firebaseConnected = true
-      clearTimeout(timeout)
-      const data = snapshot.val()
-      if (data) {
-        setCurrentData(data)
-        setIsDemo(false)
-        setDeviceStatus(prev => ({ ...prev, isOnline: true, lastSeen: Date.now() }))
+      console.log("[Aero+] Attempting to connect to Firebase...")
+      
+      let firebaseConnected = false
+      const connectionTimeout = setTimeout(() => {
+        if (!firebaseConnected) {
+          console.log("[Aero+] Firebase timeout, switching to demo mode")
+          setIsDemo(true)
+          setConnectionAttempted(true)
+        }
+      }, 8000)
+
+      // Listen to individual sensor values (matching your ESP32 structure)
+      const gasPPMRef = getGasPPMRef()
+      const tempRef = getTemperatureRef()
+      const humidRef = getHumidityRef()
+      
+      let gasPPM = 0
+      let temperature = 0
+      let humidity = 0
+
+      const updateCurrentData = () => {
+        if (gasPPM > 0 || temperature > 0 || humidity > 0) {
+          firebaseConnected = true
+          clearTimeout(connectionTimeout)
+          setIsDemo(false)
+          setCurrentData({
+            gasPPM,
+            temperature,
+            humidity,
+            timestamp: Date.now(),
+          })
+          setDeviceStatus(prev => ({ ...prev, isOnline: true, lastSeen: Date.now() }))
+          console.log("[Aero+] Sensor data received:", { gasPPM, temperature, humidity })
+        }
+        setConnectionAttempted(true)
       }
-      setConnectionAttempted(true)
-    }, (error) => {
-      console.error("[Aero+] Firebase sensor data error:", error)
-      setIsDemo(true)
-      setConnectionAttempted(true)
-    })
 
-    // Listen to device status
-    const deviceRef = getDeviceStatusRef()
-    let unsubscribeDevice = () => {}
-    if (deviceRef) {
-      unsubscribeDevice = onValue(deviceRef, (snapshot) => {
-        const status = snapshot.val()
-        if (status) {
-          setDeviceStatus(status)
-        }
-      }, (error) => {
-        console.error("[Aero+] Firebase device status error:", error)
-      })
-    }
+      // Listen to gasPPM
+      let unsubGas = () => {}
+      if (gasPPMRef) {
+        unsubGas = onValue(gasPPMRef, (snapshot) => {
+          const value = snapshot.val()
+          console.log("[Aero+] PPM Value from Firebase:", value)
+          if (value !== null) {
+            gasPPM = Number(value)
+            updateCurrentData()
+          }
+        }, (error) => {
+          console.error("[Aero+] Gas PPM read error:", error)
+        })
+      }
 
-    // Listen to alerts
-    const alertRef = getAlertsRef()
-    let unsubscribeAlerts = () => {}
-    if (alertRef) {
-      unsubscribeAlerts = onValue(alertRef, (snapshot) => {
-        const data = snapshot.val()
-        if (data) {
-          const alertsList = Object.entries(data).map(([id, alert]: [string, unknown]) => ({
-            id,
-            ...(alert as Omit<Alert, 'id'>),
-          })).sort((a, b) => b.timestamp - a.timestamp)
-          setAlerts(alertsList)
-        }
-      }, (error) => {
-        console.error("[Aero+] Firebase alerts error:", error)
-      })
-    }
+      // Listen to temperature
+      let unsubTemp = () => {}
+      if (tempRef) {
+        unsubTemp = onValue(tempRef, (snapshot) => {
+          const value = snapshot.val()
+          console.log("[Aero+] Temperature from Firebase:", value)
+          if (value !== null) {
+            temperature = Number(value)
+            updateCurrentData()
+          }
+        }, (error) => {
+          console.error("[Aero+] Temperature read error:", error)
+        })
+      }
 
-    // Listen to history
-    const histRef = getSensorHistoryRef()
-    let unsubscribeHistory = () => {}
-    if (histRef) {
-      unsubscribeHistory = onValue(histRef, (snapshot) => {
-        const data = snapshot.val()
-        if (data) {
-          const historyList = Object.values(data) as SensorData[]
-          setHistory(historyList.sort((a, b) => a.timestamp - b.timestamp))
-        }
-      }, (error) => {
-        console.error("[Aero+] Firebase history error:", error)
-      })
-    }
+      // Listen to humidity
+      let unsubHumid = () => {}
+      if (humidRef) {
+        unsubHumid = onValue(humidRef, (snapshot) => {
+          const value = snapshot.val()
+          console.log("[Aero+] Humidity from Firebase:", value)
+          if (value !== null) {
+            humidity = Number(value)
+            updateCurrentData()
+          }
+        }, (error) => {
+          console.error("[Aero+] Humidity read error:", error)
+        })
+      }
 
-    return () => {
-      clearTimeout(timeout)
-      unsubscribeSensor()
-      unsubscribeDevice()
-      unsubscribeAlerts()
-      unsubscribeHistory()
-    }
+      // Also try the full sensorData object (alternative structure)
+      const sensorRef = getSensorDataRef()
+      let unsubSensor = () => {}
+      if (sensorRef) {
+        unsubSensor = onValue(sensorRef, (snapshot) => {
+          const data = snapshot.val()
+          console.log("[Aero+] Full sensorData from Firebase:", data)
+          if (data && typeof data === 'object') {
+            firebaseConnected = true
+            clearTimeout(connectionTimeout)
+            setIsDemo(false)
+            // Support both field naming conventions
+            setCurrentData({
+              gasPPM: data.gasPPM ?? data.gas ?? 0,
+              temperature: data.temperature ?? data.temp ?? 0,
+              humidity: data.humidity ?? 0,
+              timestamp: data.timestamp ?? Date.now(),
+            })
+            setDeviceStatus(prev => ({ ...prev, isOnline: true, lastSeen: Date.now() }))
+          }
+          setConnectionAttempted(true)
+        }, (error) => {
+          console.error("[Aero+] SensorData read error:", error)
+        })
+      }
+
+      // Listen to device status
+      const deviceRef = getDeviceStatusRef()
+      let unsubDevice = () => {}
+      if (deviceRef) {
+        unsubDevice = onValue(deviceRef, (snapshot) => {
+          const status = snapshot.val()
+          if (status) {
+            setDeviceStatus(status)
+          }
+        }, (error) => {
+          console.error("[Aero+] Device status error:", error)
+        })
+      }
+
+      // Listen to alerts
+      const alertRef = getAlertsRef()
+      let unsubAlerts = () => {}
+      if (alertRef) {
+        unsubAlerts = onValue(alertRef, (snapshot) => {
+          const data = snapshot.val()
+          if (data) {
+            const alertsList = Object.entries(data).map(([id, alert]: [string, unknown]) => ({
+              id,
+              ...(alert as Omit<Alert, 'id'>),
+            })).sort((a, b) => b.timestamp - a.timestamp)
+            setAlerts(alertsList)
+          }
+        }, (error) => {
+          console.error("[Aero+] Alerts error:", error)
+        })
+      }
+
+      // Listen to history
+      const histRef = getSensorHistoryRef()
+      let unsubHistory = () => {}
+      if (histRef) {
+        unsubHistory = onValue(histRef, (snapshot) => {
+          const data = snapshot.val()
+          if (data) {
+            const historyList = Object.values(data) as SensorData[]
+            setHistory(historyList.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0)))
+          }
+        }, (error) => {
+          console.error("[Aero+] History error:", error)
+        })
+      }
+
+      return () => {
+        clearTimeout(connectionTimeout)
+        unsubGas()
+        unsubTemp()
+        unsubHumid()
+        unsubSensor()
+        unsubDevice()
+        unsubAlerts()
+        unsubHistory()
+      }
+    }, 100)
+
+    return () => clearTimeout(initTimeout)
   }, [])
 
   // Demo mode simulation - only runs when in demo mode
   useEffect(() => {
     if (!isDemo || !connectionAttempted) return
 
+    console.log("[Aero+] Running in demo mode")
+    
     // Initialize with demo data
     setCurrentData(generateDemoData())
     setHistory(generateDemoHistory())
@@ -222,7 +316,7 @@ export function useSensorData() {
       })
       
       // Check for high gas alert (occasionally trigger for demo)
-      if (newData.gas > 300) {
+      if (newData.gasPPM > 600) {
         setDeviceStatus(prev => ({ ...prev, buzzerActive: true }))
         setAlerts(prev => [{
           id: Date.now().toString(),
@@ -241,7 +335,7 @@ export function useSensorData() {
 
   // Calculate indoor AQI from sensor data
   const indoorAQI = currentData 
-    ? calculateAQI(currentData.gas, currentData.temperature, currentData.humidity)
+    ? calculateAQI(currentData.gasPPM, currentData.temperature, currentData.humidity)
     : 0
 
   // Get outdoor AQI for location

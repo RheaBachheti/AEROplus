@@ -1,34 +1,47 @@
+"use client"
+
+// Firebase SDK imports
 import { initializeApp, getApps, type FirebaseApp } from "firebase/app"
 import { getDatabase, ref, onValue, set, push, query, orderByChild, limitToLast, type Database } from "firebase/database"
 
-// Your Firebase configuration - hardcoded for Aero+ project
+// Aero+ Firebase configuration - hardcoded with your database URL
 const firebaseConfig = {
-  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY || "",
+  apiKey: "AIzaSyDemo123",  // Public database rules don't need real API key
   authDomain: "aeroplus-b7205.firebaseapp.com",
   databaseURL: "https://aeroplus-b7205-default-rtdb.asia-southeast1.firebasedatabase.app",
   projectId: "aeroplus-b7205",
   storageBucket: "aeroplus-b7205.appspot.com",
-  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || "",
-  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID || "",
+  messagingSenderId: "",
+  appId: "",
 }
 
-// Lazy initialization to prevent server-side errors
+// Lazy initialization - only initialize in browser
 let app: FirebaseApp | null = null
 let database: Database | null = null
+let initialized = false
 
-function initializeFirebase() {
-  if (typeof window === "undefined") return null
-  
-  if (!app) {
-    try {
-      app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0]
-      database = getDatabase(app)
-    } catch (error) {
-      console.error("[Aero+] Firebase initialization failed:", error)
-      return null
-    }
+function initializeFirebase(): Database | null {
+  // Only run in browser
+  if (typeof window === "undefined") {
+    return null
   }
-  return database
+  
+  // Already initialized
+  if (initialized && database) {
+    return database
+  }
+  
+  try {
+    app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0]
+    database = getDatabase(app)
+    initialized = true
+    console.log("[Aero+] Firebase initialized successfully")
+    return database
+  } catch (error) {
+    console.error("[Aero+] Firebase initialization failed:", error)
+    initialized = true // Mark as attempted
+    return null
+  }
 }
 
 // Get database instance (lazy loaded)
@@ -36,10 +49,26 @@ export function getDb(): Database | null {
   return initializeFirebase()
 }
 
-// Create refs lazily
+// Create refs lazily - matching your ESP32 data structure
 export function getSensorDataRef() {
   const db = getDb()
   return db ? ref(db, "sensorData") : null
+}
+
+// Individual sensor refs for direct access
+export function getGasPPMRef() {
+  const db = getDb()
+  return db ? ref(db, "sensorData/gasPPM") : null
+}
+
+export function getTemperatureRef() {
+  const db = getDb()
+  return db ? ref(db, "sensorData/temperature") : null
+}
+
+export function getHumidityRef() {
+  const db = getDb()
+  return db ? ref(db, "sensorData/humidity") : null
 }
 
 export function getSensorHistoryRef() {
@@ -59,10 +88,10 @@ export function getDeviceStatusRef() {
 
 // Types for sensor data from ESP32
 export interface SensorData {
-  gas: number        // MQ-2 gas sensor value (PPM)
-  temperature: number // DHT11 temperature (Celsius)
-  humidity: number   // DHT11 humidity (%)
-  timestamp: number
+  gasPPM: number       // MQ-2 gas sensor value (PPM) - matches your ESP32 field name
+  temperature: number  // DHT11 temperature (Celsius)
+  humidity: number     // DHT11 humidity (%)
+  timestamp?: number
 }
 
 export interface DeviceStatus {
@@ -80,15 +109,34 @@ export interface Alert {
   acknowledged: boolean
 }
 
-// Helper functions
-export function calculateAQI(gas: number, temp: number, humidity: number): number {
-  // Simplified AQI calculation based on sensor data
-  // Gas sensor (MQ-2) ranges roughly 0-10000 PPM
-  // Convert to AQI scale (0-500)
+// Calculate AQI from gas PPM, temperature and humidity
+export function calculateAQI(gasPPM: number, temp: number, humidity: number): number {
+  // MQ-2 sensor typically reads 200-10000 PPM for various gases
+  // We'll normalize this to an AQI-like scale (0-500)
   
-  let gasScore = Math.min(500, (gas / 10000) * 500)
+  // Base score from gas sensor
+  // Normal air: 200-400 PPM -> AQI 0-50 (Good)
+  // Slightly polluted: 400-800 PPM -> AQI 50-100 (Moderate)  
+  // Polluted: 800-1500 PPM -> AQI 100-150 (Unhealthy for Sensitive)
+  // Very polluted: 1500-3000 PPM -> AQI 150-200 (Unhealthy)
+  // Dangerous: 3000+ PPM -> AQI 200+ (Very Unhealthy/Hazardous)
   
-  // Temperature factor (optimal 20-25°C)
+  let gasScore: number
+  if (gasPPM <= 200) {
+    gasScore = 0
+  } else if (gasPPM <= 400) {
+    gasScore = ((gasPPM - 200) / 200) * 50
+  } else if (gasPPM <= 800) {
+    gasScore = 50 + ((gasPPM - 400) / 400) * 50
+  } else if (gasPPM <= 1500) {
+    gasScore = 100 + ((gasPPM - 800) / 700) * 50
+  } else if (gasPPM <= 3000) {
+    gasScore = 150 + ((gasPPM - 1500) / 1500) * 50
+  } else {
+    gasScore = 200 + ((gasPPM - 3000) / 7000) * 300
+  }
+  
+  // Temperature factor (optimal 20-26°C)
   let tempFactor = 1
   if (temp < 15 || temp > 35) tempFactor = 1.2
   else if (temp < 18 || temp > 30) tempFactor = 1.1

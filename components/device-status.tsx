@@ -44,7 +44,7 @@ export function DeviceStatusCard({ sensorData, deviceStatus }: DeviceStatusCardP
         <SensorReading
           icon={<Wind className="w-4 h-4" />}
           label="Gas"
-          value={sensorData?.gas ?? "--"}
+          value={sensorData?.gasPPM ?? "--"}
           unit="PPM"
           color="text-primary"
         />
